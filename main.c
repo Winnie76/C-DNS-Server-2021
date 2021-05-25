@@ -4,24 +4,30 @@
 #include <stdlib.h>
 #include <string.h>
 #include <strings.h>
-#include <sys/sendfile.h>
+// #include <sys/sendfile.h>
+#include <assert.h>
 #include <unistd.h>
 #include <time.h>
 #include <arpa/inet.h>
 
 char PORT_NUM[] = "8053";
 
-int func_client_socket();
+
+int func_client_socket(char* up_dns_hostname, char* up_dns_port);
+void log_recv_res(FILE * fp, unsigned char *res_pkt);
+
+
 int main(int argc, char *argv[])
 {
     //0.打开文件 dns_svr.log 用write
 
     int sockfd, newsockfd, n, enable, s, length;
     unsigned char ch[2];
-    unsigned char buffer[256];
+    //unsigned char buffer[256];
     struct addrinfo hints, *res;
     struct sockaddr_storage client_addr;
     socklen_t client_addr_size;
+    FILE *fp;
 
     if (argc < 3)
     {
@@ -35,7 +41,7 @@ int main(int argc, char *argv[])
     hints.ai_socktype = SOCK_STREAM;
     hints.ai_flags = AI_PASSIVE;
 
-    s = getaddressinfo(NULL, PORT_NUM, &hints, &res); //getaddrinfo(const char *node, e.g. "www.example.com"
+    s = getaddrinfo(NULL, PORT_NUM, &hints, &res); //getaddrinfo(const char *node, e.g. "www.example.com"
                                                       //or IP const char *service,  // e.g. "http" or port number
                                                       //const struct addrinfo *hints, struct addrinfo **res);
                                                       //give this function three input parameters, and it gives you a pointer to a linked-list, res, of results.
@@ -106,28 +112,34 @@ int main(int argc, char *argv[])
         }
         //2.16转成10进制
         length = ch[0] * 256 + ch[1];
+        printf("length is %d\n", length);
         //length = ch[0] << 8;
         //length += ch[1];
 
         //3.根据刚刚读的length读取剩下的packet的内容，存到一个malloc的array中
         unsigned char *msg_pkt = malloc(length);
         assert(msg_pkt);
-        int i = 0;
-        while (length)
-        {
-            if (read(newsockfd, msg_pkt + i, 1)) //i=0把byte存在array第0位...
-            {                                    //read 1 byte every time
-                length--;
-                i++;
-            }
-        }
+        // int i = 0;
+        // while (length)
+        // {
+        //     if (read(newsockfd, msg_pkt + i, 1)) //i=0把byte存在array第0位...
+        //     {                                    //read 1 byte every time
+        //         length--;
+        //         i++;
+        //     }
+        // }
+        read(newsockfd, msg_pkt, length);
+        printf("unsigned char is %s\n", msg_pkt);
         //不推荐这个，因为有时候消息断断续续不一定一次性能读完read(newsockfd, msg_pkt, length);
 
-        //4.判断是不是AAAA以及按格式log这个request到dns_svr.log文件中
+        //4.log这个request到dns_svr.log文件中,再判断是不是AAAA
+
         //从index12开始，12代表第一个section长度（例子里是01代表长度1，后面跟着section内容是31，也就是数字1.
         //09代表第二个section长度，后面跟了9个东西，直到读到00也就是结束
+
         //每收到一个packet都需要在文件里log写--格式在spec里
         //需要已知file pointer对应一个文件被打开，解析域名需要知道msg_packet
+
         //第一个写timestamp
         time_t rawtime;
         struct tm *info;
@@ -135,118 +147,134 @@ int main(int argc, char *argv[])
         time(&rawtime);  //给它raw time地址
         info = localtime(&rawtime);
         strftime(buffer, 80, "%FT%T%z", info); //把当前电脑的时间以string的形式用spec要的format写在buffer中
-        fprintf(fp, "%s requested", buffer);   //用fprintf写时间到文件里
+        fp = fopen("dns_svr.log", "w"); // in 'w' mode the file content is deleted and overwritten if file already exist
+        //fprintf(fp, "%s requested", buffer);   //用fprintf写时间到文件里
 
-        //如何得到domain
-        //以下代码不可以放在一起，要思考怎么连一起（应该是function里的）
-        //从packet中提取domain，把domain保存在char array中-》array 叫 domain_buffer，大小随便，如256
-        //（不用malloc如果在一个function 里，且不用return。只要普通array即可）
-        //要知道msg_pkt
-        //要知道有几个section
-        int count = find_num_section(); //为了下面的.加进去--》怎么写domain一定在index12开始，先读index12的数字，比如是1，那个下一个section在index14开始，告诉长度9，因此下一个section在index24开始，此时发现byte为0，意味section结束了。因此看section跳到多少为0就可知
+        // //如何得到domain
+        // //以下代码不可以放在一起，要思考怎么连一起（应该是function里的）
+        // //从packet中提取domain，把domain保存在char array中-》array 叫 domain_buffer，大小随便，如256
+        // //（不用malloc如果（在一个function 里，且不用return）。只要普通array即可）
+        // //要知道msg_pkt
+        // //要知道有几个section
+        char domain_buffer[256];
+//        int count = find_num_section(msg_pkt, 12); //为了下面的.加进去--》怎么写domain一定在index12开始，先读index12的数字，比如是1，那个下一个section在index14开始，告诉长度9，因此下一个section在index24开始，此时发现byte为0，意味section结束了。因此看section跳到多少为0就可知
+        int count = 0;
         int section_len;
-        int i, n = 0;
+        int j, m = 0;
         int start_index = 12; //domain是从index 12 才开始是第一个section长度，00为null对应所有section结束，由此知道多少个section
+        
+        //find count
+        int count_sec_len;
+        int count_start_index = 12;
+        while(1){
+            count_sec_len = msg_pkt[count_start_index];
+            
+            if(count_sec_len == 0){
+                break;
+            }
+            count += 1;
+            count_start_index += count_sec_len + 1;
+        }
+        
         //去每个section提取内容保存在domain的array里
         while (count)
         {
             section_len = msg_pkt[start_index]; //知道此section长度了
-            for (i = 0; i < section_len; i++)
+            for (j = 0; j < section_len; j++)
             {
-                domain_buffer[n] = msg_pkt[start_index + i + 1];
-                n++;
+                domain_buffer[m] = msg_pkt[start_index + j + 1];
+                m++;
             }
             if (count != 1)
             {
-                domain_buffer[n] = '.'; //用于1.comp30023的.
-                n++;
+                domain_buffer[m] = '.'; //用于1.comp30023的.
+                m++;
             }
             start_index += section_len + 1;
             count--;
         }
-        domain_buffer[n] = '\0'; //变成完整的string
+        domain_buffer[m] = '\0'; //变成完整的string
 
-        //5.1 如果是AAAA，发给upstream server
-        //在00null后面一定是type，所以
-        // if(null后面第一个byte==0 && null后面第二个byte==28){
-        //      是AAAA
-        // }else{不是}
+        printf("%s requested %s\n", buffer, domain_buffer);
+        fprintf(fp, "%s requested %s\n", buffer, domain_buffer);   //用fprintf写时间到文件里
+        
+        // //5.1 如果是AAAA，发给upstream server
+        // //在00null后面一定是type，所以
+        // // if(null后面第一个byte==0 && null后面第二个byte==28){
+        // //      是AAAA
+        // // }else{不是}
+        int new_length = ch[0] * 256 + ch[1] + 2;
+        unsigned char *new_pkt = malloc(new_length);
+        memcpy(new_pkt, ch, 2);
+        memcpy(new_pkt + 2, msg_pkt, new_length - 2);
 
-        //要发完整的packet，client怎么发给我，我就怎么发给upstream server--之前先读了2 byte，再rest--要还原成完整packet
-        //4. 如何发送并读取upstream 信息（用write发送）
-        //前提：建立connection，要知道connection id 以及要发送的packet（new_pkt), 以及这个packet长度
-        //发pkt
-        write(connection_id, new_pkt, new_pkt_len);
+        if(msg_pkt[count_start_index + 1] + msg_pkt[count_start_index + 2] == 28){
+            
+            int connection_id = func_client_socket(argv[1], argv[2]);
+            write(connection_id, new_pkt, new_length);
 
-        //收upstream 的 pkt
-        unsigned char len_buffer[2];
-        //先读前两个byte;读取upstream server是这里
-        read(connection_id, len_buffer, 2); //先读两个到len_buffer去
-        //把len_buffer转化为10进制的len
+            //要发完整的packet，client怎么发给我，我就怎么发给upstream server--之前先读了2 byte，再rest--要还原成完整packet
+            //4. 如何发送并读取upstream 信息（用write发送）
+            //前提：建立connection，要知道connection id 以及要发送的packet（new_pkt), 以及这个packet长度
+            //发pkt
+            // write(connection_id, new_pkt, new_pkt_len);
 
-        //再读剩下的部分（读到res_pkt去）
+            //收upstream 的 pkt
+            unsigned char len_buffer[2];
+            //先读前两个byte;读取upstream server是这里
+            if(read(connection_id, len_buffer, 2) == 0){
+                printf("failing reading from up server -- stage 3 failed\n");
+            } //先读两个到len_buffer去
+            //把len_buffer转化为10进制的len
+            int len_buffer_length = len_buffer[0] * 256 + len_buffer[1];
+            //再读剩下的部分（读到res_pkt去）
+            unsigned char *res_pkt = malloc(len_buffer_length);
+            read(connection_id, res_pkt, len_buffer_length);
+            //client 连接在读完/接受完就关闭
+            close(connection_id);
+            //6. 把length header加到msg_pkt前面，生成新的packet
+            //思路：有两个array。一个length array有两个byte，后一个packet msg. 那就做一个新的array，比packet msg大2个各自。然后分别copy之前两个array内容到新array
 
-        //client 连接在读完/接受完就关闭
-        close(connection_id);
-        //6. 把length header加到msg_pkt前面，生成新的packet
-        //思路：有两个array。一个length array有两个byte，后一个packet msg. 那就做一个新的array，比packet msg大2个各自。然后分别copy之前两个array内容到新array
+            //7. DNS_SVR作为client，连接上一级 upstream server
+            //在一开始上课的client部分
 
-        //7. DNS_SVR作为client，连接上一级 upstream server
-        //在一开始上课的client部分
+            //8. 连接成功后，将完整的packet传给upstream server
+            //在上面
 
-        //8. 连接成功后，将完整的packet传给upstream server
-        //在上面
+            //9. log刚收到的upstream server的response
+            log_recv_res(fp, res_pkt);
+        
+            //10. 把length header加到res_pkt前面，生成新的pkt
+            unsigned char *new_res_pkt = malloc(len_buffer_length + 2);
+            memcpy(new_res_pkt, len_buffer, 2);
+            memcpy(new_res_pkt + 2, res_pkt, len_buffer_length);
+            //和6一样自己想
 
-        //9. log刚收到的upstream server的response
-        void log_recv_res(FILE * fp, unsigned char *res_pkt)
-        {
-            //log timestamp-->上面说过
+            //11. send back to original client（就是把新pkt write回去）
+            write(newsockfd, new_res_pkt, len_buffer_length + 2);
+        }else{
+            //5.2 如果不是AAAA则发回一个well formed DNS msg--作为response回，所以QR改成0，且R code改成4 发回去
+            //log一个unimplemented request（request是每次收到packet request都要log的， 但如果不是AAAA就要多log一行unimplemented request）
+            //第一个写timestamp
+            time_t time_now;
+            struct tm *info_time;
+            char buffer_time[80]; //保存时间的array
+            time(&time_now);  //给它raw time地址
+            info_time = localtime(&time_now);
+            strftime(buffer_time, 80, "%FT%T%z", info_time);
+            printf("%s unimplemented request\n", buffer_time); 
+            fprintf(fp, "%s unimplemented request\n", buffer_time); 
+            //12. 把length header加到msg_pkt前面，生成新的pkt
+            //自己写
 
-            //log domain--》也说过（从index12那里开始读）
-
-            //log ipv6 address
-            //假设此时start_index = NULL对应那个index
-            //然后先判断是不是ipv6的答案， start index后+7就是对应type
-            start_index += 7;
-            if (res_pkt[start_index] + res_pkt[start_index + 1] != 28)
-            {
-                return;
-            }
-            else
-            {                     //是AAAA-》读ipv6地址
-                start_index += 8; //跳到00，通过00和10知道ipv6长度就可以打出来
-                //ipv6的length
-                int len = res_pkt[start_index] * 256;
-                len += res_pkt[start_index + 1];
-                start_index += 2;
-                char buffer[256];
-                //读取ip address用老师给的function inet_ntop --》用于把byte转成string 形式的ipv6
-                inet_ntop(AF_INET6, res_pkt + start_index, buffer, buffer_size); //把ipv6读成string放在buffer的array里
-                //                  从哪读                 保存转化好的string
-                //log_ipv6
-                fprintf(fp, "%s %s is at %s", time_buffer, domain_buffer, ipv6_buffer);
-                //题外问题：写几行文件
-                //收到request写一行；判断request是不是AAAA，不是的话写一行；是的话，发pkt给上一级server，收到server的response写一行。（每次收到pkt就写）
-                //write是发送，read是存到某个array
-            }
+            //13. 修改pkt中QR和RCODE的值，发回给original client
+            //把0000改成1000（第一位改成1--》response）
+            int QR = 128;
+            int RCODE = 4;
+            new_pkt[4] = new_pkt[4] | QR;
+            new_pkt[5] = new_pkt[5] | RCODE;
+            write(newsockfd, new_pkt, new_length);
         }
-        //10. 把length header加到res_pkt前面，生成新的pkt
-        //和6一样自己想
-
-        //11. send back to original client（就是把新pkt write回去）
-
-        //5.2 如果不是AAAA则发回一个well formed DNS msg--作为response回，所以QR改成0，且R code改成4 发回去
-        //log一个unimplemented request（request是每次收到packet request都要log的， 但如果不是AAAA就要多log一行unimplemented request）
-
-        //12. 把length header加到msg_pkt前面，生成新的pkt
-        //自己写
-
-        //13. 修改pkt中QR和RCODE的值，发回给original client
-        //把0000改成1000（第一位改成1--》response）
-        int QR = 128;
-        int RCODE = 4;
-        pkt_msg[4] = pkt_msg[4] | QR;
-        pkt_msg[5] = pkt_msg[5] | RCODE;
     }
 
     //14. 关闭DNS_SVR的socket
@@ -257,7 +285,7 @@ int main(int argc, char *argv[])
     return 0;
 }
 
-int func_client_socket(char up_dns_hostname[], char up_dns_port[])
+int func_client_socket(char* up_dns_hostname, char* up_dns_port)
 {
     int sockfd, s;
     struct addrinfo hints, *serverinfo, *rp;
@@ -267,7 +295,7 @@ int func_client_socket(char up_dns_hostname[], char up_dns_port[])
     hints.ai_socktype = SOCK_STREAM;
 
     //up_dns_hostname 想要连接的server的ip， up_dns_port对方的port
-    s = getaddressinfo(up_dns_hostname, up_dns_port, &hints, &serverinfo);
+    s = getaddrinfo(up_dns_hostname, up_dns_port, &hints, &serverinfo);
     if (s != 0)
     {
         fprintf(stderr, "getaddrinfo: %s\n", gai_strerror(s));
@@ -285,7 +313,7 @@ int func_client_socket(char up_dns_hostname[], char up_dns_port[])
 
         if (connect(sockfd, rp->ai_addr, rp->ai_addrlen) != -1)
         {
-            break;
+            break;//success
         }
         close(sockfd);
     }
@@ -296,4 +324,85 @@ int func_client_socket(char up_dns_hostname[], char up_dns_port[])
     }
     freeaddrinfo(serverinfo);
     return sockfd;
+}
+
+void log_recv_res(FILE *fp, unsigned char *res_pkt)
+{
+    //log timestamp-->上面说过
+    time_t rawtime;
+    struct tm *info;
+    char time_buffer[80]; //保存时间的array
+    time(&rawtime);  //给它raw time地址
+    info = localtime(&rawtime);
+    strftime(time_buffer, 80, "%FT%T%z", info); //把当前电脑的时间以string的形式用spec要的format写在buffer中
+    
+    //log domain--》也说过（从index12那里开始读）
+    char domain_buffer[256];
+//        int count = find_num_section(msg_pkt, 12); //为了下面的.加进去--》怎么写domain一定在index12开始，先读index12的数字，比如是1，那个下一个section在index14开始，告诉长度9，因此下一个section在index24开始，此时发现byte为0，意味section结束了。因此看section跳到多少为0就可知
+    int count = 0;
+    int section_len;
+    int j, m = 0;
+    int start_index = 12; //domain是从index 12 才开始是第一个section长度，00为null对应所有section结束，由此知道多少个section
+    
+    //find count
+    int count_sec_len;
+    int count_start_index = 12;
+    while(1){
+        count_sec_len = res_pkt[count_start_index];
+        
+        if(count_sec_len == 0){
+            break;
+        }
+        count += 1;
+        count_start_index += count_sec_len + 1;
+    }
+    
+    //去每个section提取内容保存在domain的array里
+    while (count)
+    {
+        section_len = res_pkt[start_index]; //知道此section长度了
+        for (j = 0; j < section_len; j++)
+        {
+            domain_buffer[m] = res_pkt[start_index + j + 1];
+            m++;
+        }
+        if (count != 1)
+        {
+            domain_buffer[m] = '.'; //用于1.comp30023的.
+            m++;
+        }
+        start_index += section_len + 1;
+        count--;
+    }
+    domain_buffer[m] = '\0'; //变成完整的string
+
+    // printf("res log: %s requested %s\n", time_buffer, domain_buffer);
+    // fprintf(fp, "%s requested %s\n", time_buffer, domain_buffer); 
+    //log ipv6 address
+    //假设此时start_index = (NULL对应那个index)
+    start_index = count_start_index;
+    //然后先判断是不是ipv6的答案， start index后+7就是对应type
+    start_index += 7;
+    if (res_pkt[start_index] + res_pkt[start_index + 1] != 28)
+    {
+        return;
+    }
+    else
+    {                     //是AAAA-》读ipv6地址
+        start_index += 8; //跳到00，通过00和10知道ipv6长度就可以打出来
+        //ipv6的length
+        //int len = res_pkt[start_index] * 256 + res_pkt[start_index + 1];
+        start_index += 2;
+        char ipv6_buffer[256];
+        //读取ip address用老师给的function inet_ntop --》用于把byte转成string 形式的ipv6
+        inet_ntop(AF_INET6, res_pkt + start_index, ipv6_buffer, 256); //把ipv6读成string放在buffer的array里
+        //                  从哪读                 保存转化好的string
+        //log_ipv6
+        printf("%s %s is at %s\n", time_buffer, domain_buffer, ipv6_buffer);
+        fprintf(fp, "%s %s is at %s\n", time_buffer, domain_buffer, ipv6_buffer);
+
+        //题外问题：写几行文件
+        //收到request写一行；判断request是不是AAAA，不是的话写一行；是的话，发pkt给上一级server，收到server的response写一行。（每次收到pkt就写）
+        //write是发送，read是存到某个array
+    }
 }
