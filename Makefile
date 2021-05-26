@@ -1,3 +1,13 @@
+dns_svr: dns_svr.c
+	gcc -c -Wall socket_helper.c
+	gcc -c -Wall log_helper.c
+	gcc -c -Wall dns_svr.c
+	gcc socket_helper.o log_helper.o dns_svr.o -o dns_svr
+
+clean:
+	# implement this, to remove $(BIN_PHASE[12]) and any .o files
+	rm -f dns_svr dns_svr.o dns_svr.exe socket_helper.o log_helper.o
+
 # Sample Makefile
 # CC - compiler
 # OBJ - compiled source files that should be linked
@@ -31,5 +41,4 @@ $(BIN_PHASE1): phase1.c $(OBJ)
 format:
 	clang-format -i *.c *.h
 
-clean:
-	# implement this, to remove $(BIN_PHASE[12]) and any .o files
+
